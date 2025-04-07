@@ -1,0 +1,11 @@
+difficulty,question,answer
+Simple,What architecture is the RTX 50 Series based on?,Blackwell architecture
+Simple,What was one major issue consumers faced on launch day?,"Low availability, missing components, and unstable drivers"
+Simple,Which retailer had the highest stock availability at launch according to the chart on page 3?,Best Buy
+Simple,What percentage of users expressed a negative sentiment after launch according to the pie chart on page 7?,65%
+Medium,"How many Render Output Units (ROPs) were found in some defective RTX 5090 cards, and what was the expected number?",168 ROPs were found instead of the expected 176
+Medium,Which previous driver version did users roll back to due to RTX 50 Series driver issues?,December 2024 drivers
+Medium,What fix did NVIDIA recommend to mitigate display issues with the new drivers?,Throttle high-refresh displays to 60Hz
+Challenging,"What term did analysts use to describe the RTX 50 Series launch, and what does it imply about the product availability?",'Paper launch'; implies insufficient supply to inflate demand
+Challenging,What impact did the launch issues have on NVIDIA’s competitors or the broader market?,AMD's share price spiked as users explored alternatives
+Challenging,"According to the conclusion on page 8, what actions must NVIDIA take to recover from this problematic launch?","Offer transparency, firmware updates, recall programs, and community engagement"
