@@ -32,10 +32,39 @@ def generate_answer(context, question):
         ChatMessage(role="system", content="""
             You are a helpful assistant. 
             Use the provided context to answer questions.
-            If the user question is too short or ambiguous, ask for clarification instead.
             """),
         ChatMessage(role="user", content=f"Context:\n{context}\n\nQuestion: {question}")
     ]
 
     response = client.chat(model="mistral-large-latest", messages=messages)
     return response.choices[0].message.content
+
+# --- Intent Detection ---
+def detect_intent(query: str) -> str:
+    print("=== Detecting Intent ===")
+    time.sleep(3)  # Delay to avoid spamming API
+
+    messages = [
+        ChatMessage(
+            role="system",
+            content="""
+            You are an intent detection assistant. 
+            Your job is to classify user input into one of the following categories:
+
+            - 'search_query': The input asks for information that might be found in a document or knowledge base.
+            - 'small_talk': The input is too short or ambiguous, a greeting, polite phrase, or general conversation with no need for a knowledge search.
+
+            Respond with only one of the labels: 'search_query' or 'small_talk'.
+            """
+        ),
+        ChatMessage(role="user", content=query)
+    ]
+
+    response = client.chat(model="mistral-small-2503", messages=messages)
+    intent = response.choices[0].message.content.strip().lower()
+    print(f"=== Query Intent: {intent} ===")
+
+    # Normalize the output just in case
+    if "small" in intent:
+        return "small_talk"
+    return "search_query"

@@ -8,15 +8,36 @@ from PIL import Image
 import pytesseract
 import numpy as np
 import re
-
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from sklearn.metrics.pairwise import cosine_similarity
-from mistral_api import embed_texts, generate_answer
+from mistral_api import embed_texts, generate_answer, detect_intent
+# from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 app = FastAPI()
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
+import numpy as np
+
+def cosine_similarity_manual(query_vector, doc_vectors):
+    # Normalize the query vector
+    query_norm = np.linalg.norm(query_vector)
+    if query_norm == 0:
+        return [0.0] * len(doc_vectors)
+    query_vector = np.array(query_vector) / query_norm
+
+    scores = []
+    for vec in doc_vectors:
+        vec = np.array(vec)
+        vec_norm = np.linalg.norm(vec)
+        if vec_norm == 0:
+            scores.append(0.0)
+        else:
+            vec = vec / vec_norm
+            similarity = np.dot(query_vector, vec)
+            scores.append(similarity)
+
+    return scores
 
 # --- INGEST PDFs ---
 @app.post("/ingest")
@@ -100,6 +121,12 @@ def delete_pdfs(filenames: list[str] = Form(...)):
 @app.post("/query")
 def query_system(question: str = Form(...)):
     if is_small_talk(question):
+        return {"message: 'This doesn't seem to be a knowledge-based question.'"}
+
+    intent = detect_intent(question)
+    # print(f"=== Detected intent: {intent} ===")
+
+    if intent == "small_talk":
         return {"message": "This doesn't seem to be a knowledge-based question."}
 
     all_chunks = []
@@ -115,7 +142,9 @@ def query_system(question: str = Form(...)):
 
     chunk_texts = [chunk["text"] for chunk in all_chunks]
     chunk_embeddings = [chunk["embedding"] for chunk in all_chunks]
-    semantic_scores = cosine_similarity([query_embedding], chunk_embeddings)[0]
+    # semantic_scores = cosine_similarity([query_embedding], chunk_embeddings)[0]
+    semantic_scores = cosine_similarity_manual(query_embedding, chunk_embeddings)
+
 
     # Keyword score
     query_tokens = set(re.findall(r"\w+", question.lower()))
@@ -133,15 +162,35 @@ def query_system(question: str = Form(...)):
     # Top-K chunks
     top_k = 5
     top_indices = np.argsort(final_scores)[-top_k:][::-1]
-    top_chunks = [all_chunks[i] for i in top_indices]
-    context = "\n\n".join(chunk["text"] for chunk in top_chunks)
+
+    top_chunks = []
+    for i in top_indices:
+        chunk = all_chunks[i]
+        score = final_scores[i]
+        top_chunks.append({
+            "chunk_id": chunk["chunk_id"],
+            "filename": chunk["filename"],
+            "score": round(score, 4),
+            "text": chunk["text"]
+        })
+
+    # Prepare context for generation
+    context = "\n\n".join(c["text"] for c in top_chunks)
 
     answer = generate_answer(context, question)
 
     return {
         "question": question,
         "answer": answer,
-        "used_chunks": [{"chunk_id": c["chunk_id"], "filename": c["filename"]} for c in top_chunks]
+        "used_chunks": [
+            {
+                "chunk_id": c["chunk_id"],
+                "filename": c["filename"],
+                # "text": c["text"],
+                "score": c["score"]
+            }
+            for c in top_chunks
+        ]
     }
 
 
