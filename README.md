@@ -21,34 +21,56 @@ graph TD
 ```python
 # Pseudo-code for document ingestion
 def ingest_pdf(pdf_file):
-    # 1. Extract text from PDF
-    text = extract_text(pdf_file)
+    for each file:
+        for each page:
+            # 1. Extract text from PDF
+            text = extract_text(pdf_file)
     
-    # 2. Perform semantic chunking
-    chunks = semantic_chunk_text(text)
+            # 2. Perform semantic chunking
+            chunks = semantic_chunk_text(text)
     
-    # 3. Generate embeddings
-    embeddings = embed_texts(chunks)
-    
-    # 4. Store chunks with metadata
-    store_chunks(chunks, embeddings)
+        # 3. Generate embeddings
+        embeddings = embed_texts(chunks)
+        
+        # 4. Store chunks with metadata
+        store_chunks(chunks, embeddings)
 ```
 
 ### 2. Query Processing Pipeline
 ```python
 # Pseudo-code for query processing
 def process_query(question):
-    # 1. Generate query embedding
+    # 0. Check if the question is small talk
+    if is_small_talk(question) or detect_intent(question) == "small_talk":
+        return {"message": "This doesn't seem to be a knowledge-based question."}
+    
+    # 1. Load all ingested document chunks from JSON files in the data directory
+    all_chunks = load_all_chunks_from_directory(DATA_DIR)
+    if not all_chunks:
+        raise Error("No documents ingested yet.")
+    
+    # 2. Generate the query embedding from the question text
     query_embedding = embed_texts([question])[0]
     
-    # 2. Retrieve relevant chunks
-    chunks = retrieve_relevant_chunks(query_embedding)
+    # 3. Compute similarity scores for each chunk:
+    #    a. Semantic similarity using cosine similarity of embeddings
+    #    b. Keyword overlap score between query tokens and chunk tokens
+    #    c. Combine these scores into a final hybrid score
+    final_scores = compute_hybrid_scores(query_embedding, all_chunks)
     
-    # 3. Generate answer
-    context = combine_chunks(chunks)
+    # 4. Retrieve the top K (e.g., 5) chunks based on the final scores
+    top_chunks = select_top_k_chunks(all_chunks, final_scores, k=5)
+    
+    # 5. Build context by combining texts from the top chunks and generate the answer
+    context = combine_chunks(top_chunks)
     answer = generate_answer(context, question)
     
-    return answer
+    # 6. Return the question, the generated answer, and details of the used chunks
+    return {
+        "question": question,
+        "answer": answer,
+        "used_chunks": top_chunks
+    }
 ```
 
 ## API Endpoints
