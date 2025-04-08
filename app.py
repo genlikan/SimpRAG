@@ -8,19 +8,19 @@ from PIL import Image
 import pytesseract
 import numpy as np
 import re
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
 from mistral_api import embed_texts, generate_answer, detect_intent
-# from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+from pydantic import BaseModel
 
 app = FastAPI()
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-import numpy as np
+
+# ---------------- Helper Functions ----------------
 
 def cosine_similarity_manual(query_vector, doc_vectors):
-    # Normalize the query vector
+    # Normalize the query vector and compute cosine similarities
     query_norm = np.linalg.norm(query_vector)
     if query_norm == 0:
         return [0.0] * len(doc_vectors)
@@ -36,53 +36,77 @@ def cosine_similarity_manual(query_vector, doc_vectors):
             vec = vec / vec_norm
             similarity = np.dot(query_vector, vec)
             scores.append(similarity)
-
     return scores
 
-# --- INGEST PDFs ---
+def cosine_similarity_vectors(vec1, vec2):
+    # Compute cosine similarity between two vectors
+    norm1 = np.linalg.norm(vec1)
+    norm2 = np.linalg.norm(vec2)
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return np.dot(vec1, vec2) / (norm1 * norm2)
+
+def semantic_chunk_text(text: str, similarity_threshold: float = 0.75) -> list:
+    """
+    Splits text into semantically coherent chunks based on sentence similarity.
+    The text is first split into sentences and then grouped into chunks
+    where the cosine similarity (using embed_texts for sentence embeddings)
+    between consecutive sentences is above a threshold.
+    """
+    # Split text into sentences (using a simple regex)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    if not sentences:
+        return []
+    
+    # Get embeddings for each sentence (assumed to be batched in embed_texts)
+    sentence_embeddings = embed_texts(sentences)
+    
+    chunks = []
+    current_chunk = [sentences[0]]
+    
+    for i in range(1, len(sentences)):
+        # Compare embedding of the current sentence with the previous sentence
+        similarity = cosine_similarity_vectors(sentence_embeddings[i-1], sentence_embeddings[i])
+        if similarity < similarity_threshold:
+            # Start a new chunk if similarity is below threshold
+            chunks.append(" ".join(current_chunk))
+            current_chunk = [sentences[i]]
+        else:
+            # Otherwise, append sentence to the current chunk
+            current_chunk.append(sentences[i])
+    if current_chunk:
+        chunks.append(" ".join(current_chunk))
+    return chunks
+
+
+# ---------------- API Endpoints ----------------
+
+# Ingest PDFs with semantic chunking
 @app.post("/ingest")
 async def ingest_pdfs(files: list[UploadFile] = File(...)):
     results = []
-
     for file in files:
         filename = file.filename
         file_bytes = await file.read()
         doc = fitz.open(stream=file_bytes, filetype="pdf")
-
         chunks = []
 
-        for page_num, page in enumerate(doc):
-            # Extract text
-            text = page.get_text("text")
-            if text.strip():
-                chunks.append({
-                    "chunk_id": f"{filename}_page{page_num}_text",
-                    "text": text.strip(),
-                    "type": "text"
-                })
-
-            # Extract images + OCR
-            images = page.get_images(full=True)
-            for img_index, img in enumerate(images):
-                xref = img[0]
-                pix = fitz.Pixmap(doc, xref)
-                if pix.n < 5:  # Not CMYK
-                    img_bytes = pix.tobytes("png")
-                    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-
-                    # OCR with pytesseract
-                    pil_img = Image.open(BytesIO(img_bytes))
-                    ocr_text = pytesseract.image_to_string(pil_img).strip()
-                    final_text = ocr_text if ocr_text else "Image content (no readable text found)"
-
+        for page_num, page in enumerate(doc, start=1):
+            page_text = page.get_text("text").replace("\n"," ")
+            if page_text.strip():
+                # Perform semantic chunking on the page text
+                semantic_chunks = semantic_chunk_text(page_text)
+                if not semantic_chunks:
+                    semantic_chunks = [page_text.strip()]  # Fallback to full page if chunking fails
+                for idx, chunk_text in enumerate(semantic_chunks):
                     chunks.append({
-                        "chunk_id": f"{filename}_page{page_num}_img{img_index}",
-                        "text": final_text,
-                        "image_base64": img_b64,
-                        "type": "image"
+                        "chunk_id": f"{filename}_page{page_num}_chunk{idx}",
+                        "text": chunk_text.strip(),
+                        "type": "text"
                     })
 
-        # Get embeddings
+        # Get embeddings for all chunk texts
         texts_for_embedding = [c["text"] for c in chunks]
         embeddings = embed_texts(texts_for_embedding)
 
@@ -90,7 +114,7 @@ async def ingest_pdfs(files: list[UploadFile] = File(...)):
             chunks[i]["embedding"] = emb
             chunks[i]["filename"] = filename
 
-        # Save chunks to file
+        # Save the chunks to a JSON file
         save_path = os.path.join(DATA_DIR, f"{filename}.json")
         with open(save_path, "w") as f:
             json.dump(chunks, f, indent=2)
@@ -100,32 +124,69 @@ async def ingest_pdfs(files: list[UploadFile] = File(...)):
     return {"ingested": results}
 
 
+# --- GET PDFs ---
+@app.get("/ingested_files")
+def list_ingested_files():
+    files = [
+        fname.replace(".json", "")
+        for fname in os.listdir(DATA_DIR)
+        if fname.endswith(".json")
+    ]
+    return {"filenames": files}
+
+# ---------------- Data Model ----------------
+
+class DeleteRequest(BaseModel):
+    filenames: list[str]
+
 # --- DELETE PDFs ---
 @app.delete("/ingest")
-def delete_pdfs(filenames: list[str] = Form(...)):
+def delete_pdfs(request: DeleteRequest = Body(...)):
     deleted = []
     not_found = []
+    errors = []
+    deleted_summary = {}
 
-    for fname in filenames:
-        path = os.path.join(DATA_DIR, f"{fname}.json")
-        if os.path.exists(path):
-            os.remove(path)
+    for fname in request.filenames:
+        # Validate PDF extension
+        if not fname.lower().endswith(".pdf"):
+            errors.append(f"'{fname}' is not a valid .pdf filename.")
+            continue
+
+        json_path = os.path.join(DATA_DIR, f"{fname}.json")
+        print(f"Checking: {json_path}")
+
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r") as f:
+                    chunks = json.load(f)
+                    chunk_count = len(chunks)
+            except Exception as e:
+                chunk_count = 0
+                errors.append(f"Error reading {fname}: {str(e)}")
+
+            os.remove(json_path)
             deleted.append(fname)
+            deleted_summary[fname] = chunk_count
+            print(f"Deleted {fname} ({chunk_count} chunks)")
         else:
             not_found.append(fname)
 
-    return {"deleted": deleted, "not_found": not_found}
+    return {
+        "deleted": deleted,
+        "deleted_summary": deleted_summary,
+        "not_found": not_found,
+        "errors": errors
+    }
 
 
 # --- QUERY SYSTEM ---
 @app.post("/query")
 def query_system(question: str = Form(...)):
     if is_small_talk(question):
-        return {"message: 'This doesn't seem to be a knowledge-based question.'"}
+        return {"message": "This doesn't seem to be a knowledge-based question."}
 
     intent = detect_intent(question)
-    # print(f"=== Detected intent: {intent} ===")
-
     if intent == "small_talk":
         return {"message": "This doesn't seem to be a knowledge-based question."}
 
@@ -142,24 +203,22 @@ def query_system(question: str = Form(...)):
 
     chunk_texts = [chunk["text"] for chunk in all_chunks]
     chunk_embeddings = [chunk["embedding"] for chunk in all_chunks]
-    # semantic_scores = cosine_similarity([query_embedding], chunk_embeddings)[0]
     semantic_scores = cosine_similarity_manual(query_embedding, chunk_embeddings)
 
-
-    # Keyword score
+    # Keyword score based on token overlap
     query_tokens = set(re.findall(r"\w+", question.lower()))
     keyword_scores = [
         len(query_tokens.intersection(set(re.findall(r"\w+", chunk["text"].lower()))))
         for chunk in all_chunks
     ]
 
-    # Hybrid score (semantic + keyword)
+    # Combine semantic and keyword scores in a hybrid manner
     final_scores = [
         0.7 * sem + 0.3 * (kw / max(keyword_scores) if max(keyword_scores) else 0)
         for sem, kw in zip(semantic_scores, keyword_scores)
     ]
 
-    # Top-K chunks
+    # Retrieve top-K chunks based on the final score
     top_k = 5
     top_indices = np.argsort(final_scores)[-top_k:][::-1]
 
@@ -174,9 +233,8 @@ def query_system(question: str = Form(...)):
             "text": chunk["text"]
         })
 
-    # Prepare context for generation
+    # Build context from the top chunks and generate an answer
     context = "\n\n".join(c["text"] for c in top_chunks)
-
     answer = generate_answer(context, question)
 
     return {
@@ -186,7 +244,7 @@ def query_system(question: str = Form(...)):
             {
                 "chunk_id": c["chunk_id"],
                 "filename": c["filename"],
-                # "text": c["text"],
+                "text": c["text"],
                 "score": c["score"]
             }
             for c in top_chunks

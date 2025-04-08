@@ -31,7 +31,7 @@ def generate_answer(context, question):
     messages = [
         ChatMessage(role="system", content="""
             You are a helpful assistant. 
-            Use the provided context to answer questions.
+            Only use the provided context to answer questions.
             """),
         ChatMessage(role="user", content=f"Context:\n{context}\n\nQuestion: {question}")
     ]
@@ -60,7 +60,7 @@ def detect_intent(query: str) -> str:
         ChatMessage(role="user", content=query)
     ]
 
-    response = client.chat(model="mistral-small-2503", messages=messages)
+    response = client.chat(model="mistral-small-2503", temperature=0, messages=messages)
     intent = response.choices[0].message.content.strip().lower()
     print(f"=== Query Intent: {intent} ===")
 
