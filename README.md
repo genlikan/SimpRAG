@@ -83,7 +83,6 @@ def process_query(question):
 ### Key Libraries Used
 - [FastAPI](https://fastapi.tiangolo.com/): Web framework
 - [PyMuPDF](https://pymupdf.readthedocs.io/): PDF processing
-- [scikit-learn](https://scikit-learn.org/): Vector operations
 - [Mistral API](https://mistral.ai/): Embeddings and generation
 
 ### Retrieval Algorithms
